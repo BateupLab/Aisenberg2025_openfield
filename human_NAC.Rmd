@@ -1,0 +1,339 @@
+```{r}
+library(Seurat)
+library(dplyr)
+library(biomaRt)
+library(svglite)
+```
+
+```{r}
+# Download Human NAC data from CELLxGENE: https://cellxgene.cziscience.com/collections/283d65eb-dd53-496d-adb7-7570c7caa443
+
+obj <- readRDS('Human_NAC.rds')
+obj <- CreateSeuratObject(obj[["RNA"]]@data,meta.data=obj@meta.data)
+```
+
+```{r}
+# _________________________________________________________________________________________________
+#' @title RenameGenesSeurat
+#'
+#' @description Replace gene names in different slots of a Seurat object. Run this before integration. Run this before integration. It only changes obj@assays$RNA@counts, @data and @scale.data. #
+#' @param obj Seurat object, Default: ls.Seurat[[i]]
+#' @param assay Which Seurat assay to replace. Default: RNA. Disclaimer: Intended use on simple objects that ONLY contain an RNA object. I highly advise against selectively replacing name in other assays that may have slots that cannot be updated by this function.
+#' @param newnames A vector of new gene names. Default: HGNC.updated[[i]]$Suggested.Symbol
+#'
+#' @examples
+#' \dontrun{
+#' if (interactive()) {
+#'   RenameGenesSeurat(obj = SeuratObj, newnames = HGNC.updated.genes$Suggested.Symbol)
+#' }
+#' }
+#' @export
+#' From vertesy.github.io/Seurat.utils
+#' 
+RenameGenesSeurat <- function(obj = ls.Seurat[[i]],
+                              newnames = HGNC.updated[[i]]$Suggested.Symbol,
+                              assay = "RNA",
+                              slots = c("data", "counts", "scale.data", "meta.features")
+                              ) {
+  warning("Run this before integration and downstream processing. It only attempts to change
+          @counts, @data, @scale.data and @meta.features in obj@assays$YOUR_ASSAY.")
+
+  if (nrow(obj) == length(newnames)) {
+    print(paste("Present:", SeuratObject::Layers(obj@assays[[assay]])))
+    for (s in slots) {
+      # browser()
+      nrO <- nrow(SeuratObject::GetAssayData(object = obj, assay = assay, layer = s))
+      obj <- .check_and_rename(obj, assay, newnames = newnames, layer.name = s)
+      nrN <- nrow(SeuratObject::GetAssayData(object = obj, assay = assay, layer = s))
+      stopifnot(nrN == nrO)
+    }
+  } else {
+    warning("Unequal gene sets: nrow(assayobj) != nrow(newnames). No renaming performed!", immediate. = TRUE)
+  }
+  return(obj)
+}
+
+
+# _________________________________________________________________________________________________
+#' @title Check and Rename Gene Names in Seurat Assay Object
+#'
+#' @description This function renames rows (genes) in a specified slot of a Seurat assay object.
+#' It supports slots storing data as either a dense or a sparse matrix (dgCMatrix) or data.frame.
+#'
+#' @param obj A Seurat object.
+#' @param assay An Assay name in a Seurat object.
+#' @param newnames A character vector of new gene names to be assigned.
+#' @param layer.name A string specifying the slot in the Assay object to be updated.
+#'                 Valid options typically include 'counts', 'data', or 'scale.data'.
+#'
+#' @return An Assay object with updated gene names in the specified slot.
+#' @examples
+#' \dontrun{
+#'   # Assuming 'seurat_obj' is a Seurat object and 'new_gene_names' is a vector of gene names
+#'   updated_assay <- check_and_rename(assayobj = seurat_obj[["RNA"]],
+#'                                     newnames = new_gene_names,
+#'                                     layer.name = "counts")
+#' }
+
+.check_and_rename <- function(obj, assay, newnames, layer.name) {
+  cat(layer.name, fill = TRUE)
+
+  stopifnot(
+    is(obj, "Seurat"),
+    is.character(assay),
+    is.character(layer.name),
+    is.character(newnames),
+    nrow(obj) == length(newnames)
+    )
+
+  assayobj <- obj@assays[[assay]]
+  feature.list <- rownames(assayobj@features@.Data)
+
+  if (length(feature.list) == length(newnames)) {
+    rownames(assayobj@features@.Data) <- newnames
+    nrX <- length(rownames(assayobj@features@.Data))
+  } else {
+    iprint("length feature.list", length(feature.list), "length newnames", length(newnames))
+    stop()
+  }
+
+  if(layer.name %in% SeuratObject::Layers(assayobj)) {
+
+    matrix_n <- SeuratObject::LayerData(assayobj, layer = layer.name)
+    nr1 <- nrow(matrix_n)
+
+    if (all(dim(matrix_n)) > 0) {
+      # browser()
+      stopifnot(nrow(matrix_n) == length(newnames))
+
+      if ("dgCMatrix" %in% class(matrix_n)) {
+        message(assay, "@", layer.name, " is of type dgeCMatrix!")
+        matrix_n@Dimnames[[1]] <- newnames
+
+      } else if ("matrix" %in% class(matrix_n)) {
+        message(assay, "@", layer.name, " is of type Matrix!")
+        rownames(matrix_n) <- newnames
+
+      } else if ("data.frame" %in% class(matrix_n)) {
+        message(assay, "@", layer.name, " is of type data.frame!")
+        rownames(matrix_n) <- newnames
+
+      } else {
+        warning(">>> No renaming: ", assay, "@", layer.name,
+                " not of type dgeCMatrix / Matrix / data.frame.")
+      }
+      stopifnot(nr1 == nrow(matrix_n))
+
+      SeuratObject::LayerData(assayobj, layer = layer.name) <- matrix_n
+      nr3 <- nrow(SeuratObject::LayerData(assayobj, layer = layer.name))
+      stopifnot(nr3 == nrX)
+    }
+
+  } else {
+    warning(paste(">>>", assay, "@", layer.name, "does not exist!"))
+
+  }
+  # obj <- SetAssayData(obj, layer = layer.name, new.data = matrix_n)
+  obj@assays[[assay]] <- assayobj
+  return(obj)
+}
+
+```
+```{r}
+## Rename genes from ensembl to gene names
+# Assuming obj is defined and contains rownames
+genelist <- rownames(obj)
+
+# Use the appropriate Ensembl dataset for human
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Get the Ensembl gene IDs for the provided gene symbols
+gene_names <- getBM(attributes = c('ensembl_gene_id', 'external_gene_name'), 
+                    #filters = 'external_gene_name', 
+                    values = genelist, 
+                    mart = ensembl)
+
+# Convert genelist vector to a data frame
+genelist_df <- data.frame(ensembl_gene_id = genelist)
+
+# Perform the left join to ensure all entries from genelist are kept
+gene_rename <- left_join(genelist_df, gene_names, by = "ensembl_gene_id")
+
+# Replace empty gene names with their corresponding Ensembl IDs
+gene_rename$external_gene_name <- ifelse(
+  gene_rename$external_gene_name == "" | is.na(gene_rename$external_gene_name),
+  gene_rename$ensembl_gene_id,
+  gene_rename$external_gene_name
+)
+
+# Make gene names unique
+gene_rename$external_gene_name <- make.unique(as.character(gene_rename$external_gene_name))
+
+# Check the resulting data frame
+print(gene_rename)
+```
+```{r}
+# Apply the renaming
+obj <- RenameGenesSeurat(obj, newnames=gene_rename$external_gene_name,
+                         assay='RNA')
+```
+```{r}
+# Seurat standard processing
+obj <- NormalizeData(obj) %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  FindNeighbors(dims=1:30) %>%
+  FindClusters(res=0.1) %>%
+  RunUMAP(dims=1:30)
+```
+
+```{r}
+# Check current metadata levels
+current_levels <- levels(obj$supercluster_term)
+
+# Rename the specific level
+obj$supercluster_term <- factor(obj$supercluster_term, 
+                               levels = current_levels,
+                               labels = ifelse(current_levels == "Medium spiny neuron", 
+                                               "Striatal projection neuron", 
+                                               current_levels))
+
+# Verify the change
+table(obj$supercluster_term)
+```
+
+
+```{r}
+DimPlot(obj,label=TRUE) & NoAxes() & NoLegend()
+```
+
+```{r}
+DimPlot(obj, label=TRUE,group.by='supercluster_term') & NoAxes() & NoLegend()
+
+```
+
+```{r}
+svglite('Human_recluster.svg',width=12,height=12)
+  DimPlot(obj,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_recluster_legend.svg',width=12,height=12)
+  DimPlot(obj,raster=FALSE) & NoAxes()
+dev.off()
+```
+
+```{r}
+svglite('Human_GRPR.svg',width=12,height=12)
+  FeaturePlot(obj, features = c('GRPR'),max.cutoff=0.001,order=TRUE,raster=FALSE,cols=c('lightgrey','#F71480')) & NoAxes()
+dev.off()
+
+svglite('Human_DRD1.svg',width=12,height=12)
+  FeaturePlot(obj, features = c('DRD1'),order=TRUE,raster=FALSE,cols=c('lightgrey','#00AEEF')) & NoAxes()
+dev.off()
+
+svglite('Human_DRD2.svg',width=12,height=12)
+  FeaturePlot(obj, features = c('DRD2'),order=TRUE,raster=FALSE,cols=c('lightgrey','#00C000')) & NoAxes()
+dev.off()
+
+svglite('Human_PPP1R1B.svg',width=12,height=12)
+  FeaturePlot(obj, features = c('PPP1R1B'),order=TRUE,raster=FALSE,cols=c('lightgrey','#AD07E3')) & NoAxes()
+dev.off()
+```
+
+```{r}
+# Extract GRPR-expressing cells and re-process 
+sub_grpr <- subset(obj, subset=GRPR>0)
+sub_grpr <- NormalizeData(sub_grpr) %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  FindNeighbors(dims=1:30) %>%
+  FindClusters(res=0.3) %>%
+  RunUMAP(dims=1:30)
+DimPlot(sub_grpr)
+```
+
+```{r}
+svglite('Human_GRPRonly_recluster.svg',width=12,height=12)
+  DimPlot(sub_grpr,group.by='RNA_snn_res.0.3') & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_recluster_legend.svg',width=12,height=12)
+  DimPlot(sub_grpr,group.by='RNA_snn_res.0.3') & NoAxes()
+dev.off()
+```
+
+```{r}
+# Extract expression data for specific genes
+raw_data <- as.data.frame(sub_grpr[['RNA']]$data)
+expression_data <- raw_data[c('GRPR',
+                              'DRD1',
+                              'DRD2',
+                              'GAD2',
+                              'PPP1R1B',
+                              'PENK',
+                              'TH',
+                              'CASZ1',
+                              'OTOF',
+                              'CACNG5',
+                              'PCDH8',
+                              'CHAT',
+                              'PVALB',
+                              'SST'
+                              ),]
+write.csv(expression_data,'human_grpr_expression.csv')
+write.csv(as.data.frame(sub_grpr$supercluster_term),'human_cluster_supercluster.csv')
+write.csv(as.data.frame(sub_grpr$RNA_snn_res.0.3),'human_cluster_res03.csv')
+```
+
+```{r}
+# Plots
+svglite('Human_GRPRonly_GRPR.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('GRPR')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_DRD1.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('DRD1')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_DRD2.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('DRD2')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_PPP1R1B.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('PPP1R1B')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_GAD2.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('GAD2')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_TH.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('TH')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_PENK.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('PENK')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_CASZ1.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('CASZ1')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_OTOF.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('OTOF')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_CACNG5.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('CACNG5')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_PCDH8.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('PCDH8')) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Human_GRPRonly_CHAT.svg',width=12,height=12)
+  FeaturePlot(sub_grpr,features=c('CHAT')) & NoAxes() & NoLegend()
+dev.off()
+```

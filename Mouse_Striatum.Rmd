@@ -1,0 +1,199 @@
+```{r}
+library(Seurat)
+library(dplyr)
+library(schard)
+library(svglite)
+```
+
+```{r}
+# Download atlas data and metadata using python according to these instructions: https://alleninstitute.github.io/abc_atlas_access/descriptions/WMB-10Xv3.html
+meta <- read.csv('metadata/WMB-10X/20231215/views/cell_metadata_with_cluster_annotation.csv') 
+meta <- tibble::column_to_rownames(meta,var = "cell_label")
+```
+
+```{r}
+# Load the expression matrix and make a seurat object
+str <- h5ad2seurat('expression_matrices/WMB-10Xv3/20230630/WMB-10Xv3-STR-raw.h5ad', load.obsm=FALSE)
+str <- AddMetaData(str,metadata=meta)
+str <- CreateSeuratObject(str[["RNA"]]@data,meta.data=str@meta.data)
+```
+
+```{r}
+# Standard Seurat processing
+str <- NormalizeData(str) %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA(verbose = FALSE) %>%
+  FindNeighbors() %>%
+  FindClusters() %>%
+  RunUMAP(reduction = 'pca', dims = 1:30)
+
+DimPlot(str,group.by='region_of_interest_acronym') & NoAxes()
+```
+
+```{r}
+# Subset the dorsal and ventral striatum and reprocess
+str_vd<- subset(str,subset = region_of_interest_acronym %in% c("STRv","STRd"))
+
+str_vd <- NormalizeData(str_vd) %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA(verbose = FALSE) %>%
+  FindNeighbors() %>%
+  FindClusters(res=0.1) %>%
+  RunUMAP(reduction = 'pca', dims = 1:30)
+
+saveRDS(str_vd,'str_vd.RDS')
+```
+```{r}
+DimPlot(str_vd)
+```
+```{r}
+# Plots
+
+svglite('UMAP_recluster.svg',width=12,height=12)
+  DimPlot(str_vd,raster=FALSE,group.by='RNA_snn_res.0.1') & NoAxes() & NoLegend()
+dev.off()
+
+svglite('UMAP_recluster_legend.svg',width=12,height=12)
+  DimPlot(str_vd,raster=FALSE,group.by='RNA_snn_res.0.1') & NoAxes()
+dev.off()
+
+svglite('UMAP_cluster.svg',width=12,height=12)
+  DimPlot(str_vd,raster=FALSE,group.by='subclass') & NoAxes() & NoLegend()
+dev.off()
+
+svglite('UMAP_cluster_legend.svg',width=12,height=12)
+  DimPlot(str_vd,raster=FALSE,group.by='subclass') & NoAxes()
+dev.off()
+
+svglite('UMAP_region.svg',width=12,height=12)
+  DimPlot(str_vd,raster=FALSE,group.by='region_of_interest_acronym') & NoAxes() & NoLegend()
+dev.off()
+
+svglite('UMAP_region_legend.svg',width=12,height=12)
+  DimPlot(str_vd,raster=FALSE,group.by='region_of_interest_acronym') & NoAxes()
+dev.off()
+
+svglite('FeatureGrpr.svg',width=12,height=12)
+  FeaturePlot(str_vd, features = c('ENSMUSG00000031364'),max.cutoff=0.001,order=TRUE,raster=FALSE,cols=c('lightgrey','#F71480')) & NoAxes()
+dev.off()
+
+svglite('FeatureDrd1.svg',width=12,height=12)
+  FeaturePlot(str_vd, features = c('ENSMUSG00000021478'),order=TRUE,raster=FALSE,cols=c('lightgrey','#00AEEF')) & NoAxes() 
+dev.off()
+
+svglite('FeatureDrd2.svg',width=12,height=12)
+  FeaturePlot(str_vd, features = c('ENSMUSG00000032259'),order=TRUE,raster=FALSE,,cols=c('lightgrey','#00C000')) & NoAxes()
+dev.off()
+
+svglite('FeaturePpp1r1b.svg',width=12,height=12)
+  FeaturePlot(str_vd, features = c('ENSMUSG00000061718'),order=TRUE,raster=FALSE,,cols=c('lightgrey','#AD07E3')) & NoAxes()
+dev.off()
+```
+
+```{r}
+# Subset Grpr-expressing cells in the ventral striatum
+strv <- subset(str,subset = region_of_interest_acronym %in% c("STRv"))
+grpr_obj <- subset(strv, subset=ENSMUSG00000031364>0)
+```
+```{r}
+# Reprocess 
+grpr_obj <- NormalizeData(grpr_obj) %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  FindNeighbors() %>%
+  FindClusters(res=0.4) %>%
+  RunUMAP(dims=1:30)
+DimPlot(grpr_obj)
+
+svglite('GRPR_only.svg',width=12,height=12)
+  DimPlot(grpr_obj,group.by="RNA_snn_res.0.5") & NoAxes() & NoLegend()
+dev.off()
+
+svglite('GRPR_only_legend.svg',width=12,height=12)
+  DimPlot(grpr_obj,group.by="RNA_snn_res.0.5") & NoAxes()
+dev.off()
+```
+```{r}
+# Extract expression data for selected genes
+raw_data <- as.data.frame(grpr_obj[['RNA']]$data)
+expression_data <- raw_data[c('ENSMUSG00000031364',
+                              'ENSMUSG00000021478',
+                              'ENSMUSG00000032259',
+                              'ENSMUSG00000026787',
+                              'ENSMUSG00000061718',
+                              'ENSMUSG00000045573',
+                              'ENSMUSG00000000214',
+                              'ENSMUSG00000028977',
+                              'ENSMUSG00000062372',
+                              'ENSMUSG00000040373',
+                              'ENSMUSG00000036422',
+                              'ENSMUSG00000021919',
+                              'ENSMUSG00000005716',
+                              'ENSMUSG00000004366'
+                              ),]
+```
+
+```{r}
+# Plots
+svglite('Grpr_Grpr.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000031364'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Drd1.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000021478'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Drd2.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000032259'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Gad2.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000026787'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Ppp1r1b.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000061718'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Penk.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000045573'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Th.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000000214'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Casz1.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000028977'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Otof.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000062372'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Cacng5.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000040373'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Pcdh8.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000036422'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_Chat.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000021919'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_PV.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000005716'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+
+svglite('Grpr_SST.svg',width=12,height=12)
+  FeaturePlot(grpr_obj, features = c('ENSMUSG00000004366'),order=TRUE,raster=FALSE) & NoAxes() & NoLegend()
+dev.off()
+```
+
+
+
