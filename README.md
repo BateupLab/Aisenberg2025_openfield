@@ -1,4 +1,4 @@
-# Aisenberg2025_openfield
+# Aisenberg2025
 
 ## Juptyer notebook to generate Extended Figure 15 b-g
 
